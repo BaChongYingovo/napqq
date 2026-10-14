@@ -1,0 +1,17 @@
+# 隐私与运行时数据 —— 绝对不要提交
+config.json
+data/
+out/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 从本机 NapCat 提取的衍生数据（见 NOTICE.md 第 3 节）
+agent/qq_faces.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

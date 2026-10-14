@@ -1,0 +1,85 @@
+{
+  "onebot": {
+    "ws_url": "ws://127.0.0.1:3001",
+    "access_token": "",
+    "reconnect_min_seconds": 2,
+    "reconnect_max_seconds": 60
+  },
+  "llm": {
+    "base_url": "https://api.deepseek.com",
+    "api_key": "",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "model": "deepseek-chat",
+    "temperature": 0.9,
+    "max_tokens": 800,
+    "timeout_seconds": 90,
+    "history_limit": 24,
+    "extra_body": {}
+  },
+  "persona": {
+    "name": "小喵",
+    "system_prompt": "",
+    "typing_style": {
+      "enabled": true,
+      "split_on_newline": true,
+      "max_chars_per_message": 40,
+      "long_reply_threshold": 200,
+      "long_reply_max_chars_per_message": 350,
+      "max_messages_per_reply": 5
+    }
+  },
+  "vision": {
+    "enabled": false,
+    "model": "",
+    "image_transport": "auto",
+    "max_images_per_message": 2,
+    "max_image_bytes": 4194304,
+    "image_timeout_seconds": 20,
+    "detail": "auto"
+  },
+  "memory": {
+    "enabled": true,
+    "trigger_messages": 40,
+    "min_chunk_messages": 8,
+    "keep_recent": 16,
+    "max_summary_chars": 1200,
+    "summary_model": ""
+  },
+  "contacts": {
+    "1000000003": {
+      "alias": "女朋友",
+      "relation": "女朋友",
+      "notes": "示例：叫她小柚。她讨厌被敷衍，回消息别只回一两个字。"
+    }
+  },
+  "behaviour": {
+    "owner_qq": 0,
+    "private_reply": true,
+    "group_reply_mode": "mention",
+    "group_whitelist": [],
+    "group_blacklist": [],
+    "private_blacklist": [],
+    "debounce_seconds": 1.2,
+    "min_reply_interval_seconds": 0.8,
+    "active_hours": "09:00-24:00",
+    "at_sender": true,
+    "avoid_repeat": true,
+    "self_check": true,
+    "repeat_similarity": 0.8,
+    "error_reply": "",
+    "commands": {
+      "enabled": true,
+      "reset": "/reset",
+      "pause": "/pause",
+      "resume": "/resume",
+      "persona": "/persona",
+      "memory": "/memory",
+      "forget": "/forget"
+    }
+  },
+  "storage": {
+    "db_path": "data/agent.db",
+    "log_path": "data/agent.log",
+    "log_level": "INFO"
+  }
+}
