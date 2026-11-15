@@ -1,6 +1,7 @@
 """会话存储：SQLite。保存每个会话的消息历史、滚动摘要、运行时状态。"""
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -48,14 +49,31 @@ class Store:
     def __init__(self, db_path: str | Path):
         p = Path(db_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(p), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._lock = threading.RLock()
-        with self._lock:
-            self._conn.executescript(SCHEMA)
-            self._conn.commit()
+        # 先收紧 umask，避免新建的库和 WAL 在 chmod 之前被其它本地用户读到。
+        old_umask = os.umask(0o077) if os.name == "posix" else None
+        try:
+            self._conn = sqlite3.connect(str(p), check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._lock = threading.RLock()
+            with self._lock:
+                self._conn.executescript(SCHEMA)
+                self._conn.commit()
+        finally:
+            if old_umask is not None:
+                os.umask(old_umask)
+        self._restrict_db_files(p)
+
+    @staticmethod
+    def _restrict_db_files(path: Path) -> None:
+        from .paths import restrict_file_permissions
+
+        restrict_file_permissions(path)
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(path) + suffix)
+            if side.exists():
+                restrict_file_permissions(side)
 
     def close(self) -> None:
         with self._lock:

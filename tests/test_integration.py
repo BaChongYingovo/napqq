@@ -213,6 +213,12 @@ def make_config(port: int, db_path: Path, token: str = "secret-token") -> Config
     cfg["behaviour"]["debounce_seconds"] = 0.05
     cfg["behaviour"]["min_reply_interval_seconds"] = 0
     cfg["behaviour"]["owner_qq"] = 20002
+    # 套件测的是回复链路。产品默认 private_reply=false，这里显式打开。
+    cfg["behaviour"]["private_reply"] = True
+    # 示例配置的作息是 09:00-24:00。测试不能跟着墙上时钟静默，否则夜间整套回复断言都会空。
+    cfg["behaviour"]["active_hours"] = ""
+    # 打字延迟会让「2 秒内必须发出」的断言和墙上时钟赛跑。
+    cfg["behaviour"]["typing_delay"] = {"enabled": False}
     cfg["llm"]["api_key"] = "test-key"
     return cfg
 
@@ -421,6 +427,10 @@ def make_offline_config(db_name: str, **overrides) -> Config:
     cfg["behaviour"]["debounce_seconds"] = 0.02
     cfg["behaviour"]["min_reply_interval_seconds"] = 0
     cfg["behaviour"]["owner_qq"] = 20002
+    # 套件测的是回复链路。产品默认 private_reply=false，这里显式打开。
+    cfg["behaviour"]["private_reply"] = True
+    # 示例配置的作息是 09:00-24:00。测试不能跟着墙上时钟静默；作息用例会自己覆盖这个字段。
+    cfg["behaviour"]["active_hours"] = ""
     # 拟人节奏是给真实聊天用的：测试不该为它变慢或超时
     cfg["behaviour"]["typing_delay"] = {"enabled": False}
     cfg["storage"]["db_path"] = str(ROOT / "data" / db_name)
@@ -561,6 +571,7 @@ async def test_vision() -> None:
     cfg = make_offline_config("test_vision.db", vision={
         "enabled": True, "image_transport": "base64", "max_images_per_message": 2,
         "max_image_bytes": 4096, "image_timeout_seconds": 5, "detail": "auto", "model": "",
+        "allowed_dirs": [str(png_path.parent)],
     })
     store = Store(cfg.resolve("data/test_vision.db"))
     llm = LLMClient(cfg["llm"])
@@ -658,11 +669,42 @@ async def test_vision() -> None:
     check("关闭视觉时提示词承认看不到", "你看不到内容" in messages5[0]["content"])
     check("关闭视觉时不调用 get_image", onebot5.image_calls == [])
 
+    from agent import vision as vision_mod
+
+    outside = "/etc/passwd"
+    check("允许目录之外的绝对路径不读取",
+          vision_mod.file_to_data_url(outside, 100000, [png_path.parent]) is None)
+    traversal = str(png_path.parent / ".." / ".." / "etc" / "passwd")
+    check("路径穿越不读取",
+          vision_mod.file_to_data_url(traversal, 100000, [png_path.parent]) is None)
+    check("file URL 不读取允许目录之外的文件",
+          vision_mod.file_to_data_url("file:///etc/passwd", 100000, [png_path.parent]) is None)
+    check("未配置允许目录时不读本地文件",
+          vision_mod.file_to_data_url(str(png_path), 100000, []) is None)
+    inside = vision_mod.file_to_data_url(str(png_path), 100000, [png_path.parent])
+    check("允许目录内的图片可以读取", bool(inside) and str(inside).startswith("data:image/"))
+    check("ftp 等非 http 协议被拒绝",
+          vision_mod.download_to_data_url("ftp://example.com/a.png", 1000) is None)
+    check("其它主机的 file URL 不能解析成本地路径",
+          vision_mod.file_url_to_path("file://evil.example/secret.png") is None)
+    cfg["vision"]["enabled"] = True
+    cfg["vision"]["image_transport"] = "base64"
+    evil_batch = [{
+        "segments": [{"type": "image", "data": {"file": "/etc/passwd"}},
+                     {"type": "text", "data": {"text": "看"}}],
+        "text": "[图片] 看", "sender_id": 20002, "sender_name": "老王",
+        "message_id": 15, "ts": 1759000604,
+    }]
+    _, evil_ids = agent._store_batch("private", 20002, evil_batch)
+    evil_msgs, evil_used = await agent._build_messages("private", 20002, evil_batch, evil_ids)
+    check("消息里的任意本地路径不会被读入提示词",
+          evil_used is False and isinstance(evil_msgs[-1]["content"], str))
+
     # 视觉配置校验
     from agent.config import Config as Cfg
     bad = make_offline_config("test_vision.db", vision={"enabled": True, "image_transport": "ftp"})
     problems = bad.validate()
-    check("非法 image_transport 被校验拦下", any("image_transport" in p for p in problems), f"{problems}")
+    check("非法 image_transport 被校验拦下", any("image_transport" in p for p in problems))
     bad_mem = make_offline_config("test_vision.db", memory={"enabled": True, "trigger_messages": 5, "keep_recent": 10})
     check("trigger<=keep 被校验拦下", any("trigger_messages" in p for p in bad_mem.validate()))
     _ = Cfg
@@ -728,7 +770,7 @@ async def test_active_hours() -> None:
     bad_cfg = Config.load(ROOT / "config.example.json")
     bad_cfg["behaviour"]["active_hours"] = "9点-24点"
     problems = bad_cfg.validate()
-    check("非法 active_hours 阻止启动", any("active_hours" in p for p in problems), f"{problems}")
+    check("非法 active_hours 阻止启动", any("active_hours" in p for p in problems))
 
     # --- 编排层：静默时不发消息，但消息仍要入库 ---
     now = datetime.now()
@@ -829,7 +871,7 @@ async def test_contacts() -> None:
 
     # 配置校验
     bad = make_offline_config("test_contacts.db", contacts={"not-a-qq": {"alias": "x"}})
-    check("非数字键被校验拦下", any("contacts" in p for p in bad.validate()), str(bad.validate()))
+    check("非数字键被校验拦下", any("contacts" in p for p in bad.validate()))
     bad2 = make_offline_config("test_contacts.db")
     bad2["contacts"] = ["a"]
     check("contacts 非对象被校验拦下", any("contacts" in p for p in bad2.validate()))
@@ -1144,11 +1186,43 @@ async def test_whitelist_and_faces() -> None:
                  "sender_id": sender, "sender_name": "x", "message_id": 1, "ts": 1759000000}]
 
     cfg["behaviour"]["private_whitelist"] = []
+    cfg["behaviour"]["private_blacklist"] = []
     check("白名单为空时私聊都回", agent._should_reply("private", {}, [], 10001, 12345))
 
     cfg["behaviour"]["private_whitelist"] = [100000004]
     check("白名单内的人回复", agent._should_reply("private", {}, [], 10001, 100000004))
     check("白名单外的人不回复", not agent._should_reply("private", {}, [], 10001, 99999))
+
+    cfg["behaviour"]["private_whitelist"] = ["100000004"]
+    check("字符串白名单放行整数 QQ", agent._should_reply("private", {}, [], 10001, 100000004))
+    cfg["behaviour"]["private_whitelist"] = []
+
+    cfg["behaviour"]["private_blacklist"] = ["12345"]
+    check("字符串黑名单挡住整数 QQ", not agent._should_reply("private", {}, [], 10001, 12345))
+    cfg["behaviour"]["private_blacklist"] = "12345"
+    check("单个字符串黑名单也会挡住", not agent._should_reply("private", {}, [], 10001, 12345))
+    cfg["behaviour"]["private_blacklist"] = [12345]
+    check("整数黑名单挡住同一 QQ", not agent._should_reply("private", {}, [], 10001, 12345))
+    check("不在黑名单里的人仍回复", agent._should_reply("private", {}, [], 10001, 54321))
+    cfg["behaviour"]["private_blacklist"] = []
+
+    cfg["behaviour"]["private_reply"] = False
+    check("private_reply 关闭时私聊不回", not agent._should_reply("private", {}, [], 10001, 12345))
+    cfg["behaviour"].pop("private_reply", None)
+    check("未写 private_reply 时默认不回私聊", not agent._should_reply("private", {}, [], 10001, 12345))
+    cfg["behaviour"]["private_reply"] = True
+
+    cfg["behaviour"]["group_reply_mode"] = "all"
+    cfg["behaviour"]["group_blacklist"] = ["5"]
+    check("字符串群黑名单挡住整数群号",
+          not agent._should_reply("group", {"group_id": 5}, [], 10001, 9))
+    cfg["behaviour"]["group_blacklist"] = [6]
+    check("整数群黑名单挡住同一群",
+          not agent._should_reply("group", {"group_id": 6}, [], 10001, 9))
+    check("不在群黑名单的群仍回复",
+          agent._should_reply("group", {"group_id": 7}, [], 10001, 9))
+    cfg["behaviour"]["group_blacklist"] = []
+    cfg["behaviour"]["group_reply_mode"] = "mention"
 
     cfg["behaviour"]["group_reply_mode"] = "off"
     at_segs = [{"type": "at", "data": {"qq": "10001"}}, {"type": "text", "data": {"text": "在吗"}}]
@@ -1300,6 +1374,105 @@ async def test_time_and_proactive() -> None:
     Path(cfg.resolve("data/test_proa.db")).unlink(missing_ok=True)
 
 
+async def test_security() -> None:
+    print("\n[14] 黑名单类型、空 token 失败关闭、配置不进仓库、数据库权限")
+    import stat
+    import tempfile
+
+    from agent.config import init_user_config
+    from agent.onebot import OneBotClient
+
+    fresh = Config.load(ROOT / "config.example.json")
+    check("示例配置私聊默认关闭", fresh["behaviour"]["private_reply"] is False)
+
+    cfg = Config.load(ROOT / "config.example.json")
+    cfg["llm"]["api_key"] = "test-key"
+    cfg["onebot"]["access_token"] = ""
+    check("空 access_token 拒绝启动", any("access_token" in p for p in cfg.validate()))
+    cfg["onebot"]["access_token"] = "   "
+    check("空白 access_token 拒绝启动", any("access_token" in p for p in cfg.validate()))
+    cfg["onebot"]["access_token"] = "x"
+    check("非空 access_token 通过该项校验",
+          not [p for p in cfg.validate() if "access_token" in p])
+
+    os.environ["QQ_AGENT_TOKEN"] = "env-token-for-test"
+    try:
+        overridden = Config.load(ROOT / "config.example.json")
+        check("QQ_AGENT_TOKEN 覆盖文件里的空 token",
+              overridden["onebot"]["access_token"] == "env-token-for-test")
+    finally:
+        os.environ.pop("QQ_AGENT_TOKEN", None)
+
+    client = OneBotClient("ws://127.0.0.1:9", "")
+    refused = False
+    try:
+        await client.start(lambda _event: _noop())
+    except Exception as exc:
+        refused = "access_token" in str(exc)
+    check("空 token 时 OneBot 客户端拒绝连接", refused)
+
+    db_dir = Path(tempfile.mkdtemp())
+    db_path = db_dir / "napqq.db"
+    store = Store(db_path)
+    mode = stat.S_IMODE(db_path.stat().st_mode)
+    check("新建数据库权限为 0600", mode == 0o600, oct(mode))
+    store.close()
+
+    with tempfile.TemporaryDirectory() as td:
+        outside = Path(td) / "user" / "config.json"
+        state, path = init_user_config(ROOT, dest=outside)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        token = str(data.get("onebot", {}).get("access_token") or "")
+        check("首次生成配置", state == "created" and path == outside)
+        check("生成的 token 非空且不是占位空串", bool(token.strip()) and len(token) >= 16)
+        check("生成配置的私聊默认关闭", data.get("behaviour", {}).get("private_reply") is False)
+        check("生成配置不写入 api key", not str(data.get("llm", {}).get("api_key") or "").strip())
+        cfg_mode = stat.S_IMODE(path.stat().st_mode)
+        check("生成的配置文件权限为 0600", cfg_mode == 0o600, oct(cfg_mode))
+
+        data["behaviour"]["private_reply"] = True
+        data["onebot"]["access_token"] = "kept-token-value"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        state2, _ = init_user_config(ROOT, dest=path)
+        again = json.loads(path.read_text(encoding="utf-8"))
+        check("已有配置文件不会被 --init 改写", state2 == "exists")
+        check("已写明的 private_reply 保持原值", again["behaviour"]["private_reply"] is True)
+        check("已有 token 不被替换", again["onebot"]["access_token"] == "kept-token-value")
+
+        explicit = Path(td) / "existing.json"
+        explicit.write_text(json.dumps({
+            "behaviour": {"private_reply": True},
+            "onebot": {"access_token": "already", "ws_url": "ws://127.0.0.1:1"},
+            "llm": {"api_key": "k"},
+        }), encoding="utf-8")
+        loaded = Config.load(explicit, project_root=ROOT)
+        check("加载时不把已写明的 private_reply 改成默认值",
+              loaded["behaviour"]["private_reply"] is True)
+
+    leaked = ROOT / "config.json"
+    try:
+        try:
+            init_user_config(ROOT, dest=leaked)
+            check("拒绝把配置写进项目目录", False)
+        except ValueError:
+            check("拒绝把配置写进项目目录", True)
+    finally:
+        if leaked.exists():
+            leaked.unlink()
+    check("项目目录没有留下 config.json", not leaked.exists())
+
+    gi = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    for needle in ("config.json", "*.db", ".env", "*.session", "session.json", "session.token"):
+        check(f".gitignore 包含 {needle}", needle in gi)
+    start = (ROOT / "start.cmd").read_text(encoding="utf-8")
+    check("start.cmd 不再复制配置到仓库目录", "copy config.example.json config.json" not in start)
+    check("start.cmd 使用 --init", "run.py --init" in start)
+
+
+async def _noop() -> None:
+    return None
+
+
 async def main() -> int:
     removed = reset_test_databases()
     if removed:
@@ -1317,6 +1490,7 @@ async def main() -> int:
     await test_self_check()
     await test_whitelist_and_faces()
     await test_time_and_proactive()
+    await test_security()
     print(f"\n通过 {len(PASSED)} 项，失败 {len(FAILED)} 项")
     if FAILED:
         for name in FAILED:

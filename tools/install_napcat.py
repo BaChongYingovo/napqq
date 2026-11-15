@@ -1,13 +1,20 @@
 """解压 NapCat.Shell 到 <NAPCAT_DIR>，并预写 OneBot v11 WebSocket 服务端配置。
 
-对应 qq-agent 的 config.json: onebot.ws_url = ws://127.0.0.1:3001, access_token = ""
+token 不会留空：与用户数据目录里的 napqq 配置写成同一个值，终端不打印该值。
 """
 from __future__ import annotations
 
 import json
 import shutil
+import sys
 import zipfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from agent.config import write_napcat_onebot_config  # noqa: E402
 
 ZIP = Path(r"<NAPCAT_DIR>\downloads\NapCat.Shell.v4.18.33.zip")
 DEST = Path(r"<NAPCAT_DIR>")
@@ -24,7 +31,7 @@ ONEBOT_CONFIG = {
                 "port": 3001,
                 "messagePostFormat": "array",
                 "reportSelfMessage": False,
-                "token": "",
+                "token": "",  # 写入前由 write_napcat_onebot_config 换成非空 token
                 "enableForcePushEvent": True,
                 "debug": False,
                 "heartInterval": 30000,
@@ -61,8 +68,8 @@ def main() -> int:
         backup = cfg_dir / "onebot11.json.bak"
         shutil.copy2(target, backup)
         print(f"    已备份原配置到 {backup.name}")
-    target.write_text(json.dumps(ONEBOT_CONFIG, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"    WS 服务端: 127.0.0.1:3001  格式=array  token=空（仅本机可连）")
+    write_napcat_onebot_config(target, ROOT, ONEBOT_CONFIG)
+    print("    WS 服务端: 127.0.0.1:3001  格式=array  token=已写入配置（值未显示）")
 
     print("[3] 校验关键文件")
     for name in ("launcher.bat", "launcher-win10.bat", "NapCatWinBootMain.exe", "napcat.mjs",

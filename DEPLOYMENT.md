@@ -144,7 +144,7 @@ Get-Process QQ -ErrorAction SilentlyContinue | Stop-Process -Force
 | 配置 | 当前值 | 影响 |
 |---|---|---|
 | `behaviour.owner_qq` | `0` | 管理指令关闭，**任何人都无法远程叫停机器人** |
-| `behaviour.private_reply` | `true` | 任何人的私聊都会回 |
+| `behaviour.private_reply` | 新安装默认 `false` | 私聊默认不回。已有配置里写过的值不会被改写。要收私聊必须显式设为 `true` |
 | `behaviour.group_reply_mode` | `mention` | 群里只在被 @ 时回 |
 | `behaviour.active_hours` | `"09:00-24:00"` | **夜间静默**：时段外只记录不回复，消掉「7x24 在线」这个最硬的机器特征 |
 | `vision.enabled` | `false` | 图片看不懂（`deepseek-chat` 不支持视觉） |
@@ -154,10 +154,14 @@ Get-Process QQ -ErrorAction SilentlyContinue | Stop-Process -Force
 
 **想恢复管理指令**：把 `behaviour.owner_qq` 改成你自己的 QQ 号即可（重启生效）。
 
-### API key
+### API key 与 OneBot token
 
-`config.json` 里的 `llm.api_key` 是**明文**。分享这个文件夹之前先删掉或换 key。
+`config.json` 放在用户数据目录，不在仓库里。`llm.api_key` 是**明文**。分享配置之前先删掉或换 key。
 也可以用环境变量 `DEEPSEEK_API_KEY` 代替（代码优先读环境变量）。
+
+`onebot.access_token` 不能为空，否则拒绝启动。`python run.py --init` 会在用户数据目录生成一个随机 token（终端不打印）。NapCat 的 WebSocket 服务端要填同一个值。已有配置里的 token 不会被 `--init` 改掉。
+
+记忆库 `napqq.db` 在 Unix 上创建为 `0600`。
 
 ### 单实例保护
 

@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from agent.bot import Agent  # noqa: E402
-from agent.config import Config, migrate_legacy_data  # noqa: E402
+from agent.config import Config, init_user_config, migrate_legacy_data  # noqa: E402
 from agent.proactive import ProactiveMessenger  # noqa: E402
 from agent import emoji  # noqa: E402
 from agent.llm import LLMClient, LLMError  # noqa: E402
@@ -106,7 +106,8 @@ def print_config_summary(cfg: Config, problems: list[str], warnings: list[str] |
     print()
     print("配置:")
     print(f"  OneBot   : {cfg['onebot']['ws_url']}")
-    print(f"  Token    : {'已设置' if cfg['onebot'].get('access_token') else '未设置'}")
+    token_set = bool(str(cfg["onebot"].get("access_token") or "").strip())
+    print(f"  Token    : {'已设置' if token_set else '未设置（拒绝启动）'}")
     print(f"  模型     : {cfg['llm']['model']} @ {cfg['llm']['base_url']}")
     print(f"  API Key  : {'已设置(' + str(len(cfg['llm']['api_key'])) + '字符)' if cfg['llm'].get('api_key') else '缺失'}")
     print(f"  人设名   : {cfg['persona']['name']}")
@@ -184,6 +185,8 @@ async def run_selftest(cfg: Config) -> int:
     cfg["behaviour"]["group_whitelist"] = []
     cfg["behaviour"]["group_blacklist"] = []
     cfg["behaviour"]["group_reply_mode"] = "mention"
+    # 自测要走通私聊回复链路。产品默认是关闭私聊，这里显式打开，避免被新默认值打断。
+    cfg["behaviour"]["private_reply"] = True
     llm = LLMClient(cfg["llm"])
     llm.chat = _mock_chat  # type: ignore[assignment]
     onebot = OneBotClient("ws://mock", "")
@@ -364,16 +367,37 @@ def main() -> int:
                         help="干跑：连真实 QQ 但不调用大模型，回复固定文本，用于验证链路")
     parser.add_argument("--no-migrate", action="store_true",
                         help="跳过「把旧部署遗留的配置/数据库搬到用户数据目录」这一步")
+    parser.add_argument("--init", action="store_true",
+                        help="在用户数据目录生成配置（已存在则不改写）。标准输出一行 state|path，不打印 token")
     args = parser.parse_args()
 
     # 旧部署可能把 config.json / data 留在项目目录里。先搬到用户数据目录，
     # 避免运行数据继续和代码混在一起——这是分享/开源时最危险的隐患。
+    # --init 时写到 stderr，避免污染给 start.cmd 解析的那一行 stdout。
+    mig_out = sys.stderr if args.init else sys.stdout
     if not args.no_migrate:
         try:
             for m in migrate_legacy_data(ROOT):
-                print(f"[i] 已迁移: {m}")
+                print(f"[i] 已迁移: {m}", file=mig_out)
         except Exception as e:  # 迁移失败不能挡住启动
-            print(f"[!] 自动迁移失败（不影响启动）: {e}")
+            print(f"[!] 自动迁移失败（不影响启动）: {e}", file=mig_out)
+
+    if args.init:
+        try:
+            state, path = init_user_config(ROOT)
+        except ValueError as e:
+            print(f"[x] {e}", file=sys.stderr)
+            return 2
+        print(f"{state}|{path}")
+        if state == "created":
+            print(
+                "已在用户数据目录生成配置。access token 只写入该文件，此处不显示。"
+                "请填写 llm.api_key，并把同一个 token 配到 NapCat，不要提交或发到聊天里。",
+                file=sys.stderr,
+            )
+        else:
+            print("配置已存在，未改写其中已有的值。", file=sys.stderr)
+        return 0
 
     try:
         cfg = Config.load(args.config, project_root=ROOT)

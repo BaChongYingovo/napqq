@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "onebot": {
         "ws_url": "ws://127.0.0.1:3001",
-        "access_token": "",
+        "access_token": "",  # 空值拒绝启动，见 validate()；首次生成走 init_user_config
         "reconnect_min_seconds": 2,
         "reconnect_max_seconds": 60,
     },
@@ -42,6 +43,8 @@ DEFAULTS: dict[str, Any] = {
         "max_image_bytes": 4194304,
         "image_timeout_seconds": 20,
         "detail": "auto",
+        # 本地读图只允许这些目录。空 = 不读任何本地路径（含消息里带来的 file 路径）。
+        "allowed_dirs": [],
     },
     "memory": {
         "enabled": True,
@@ -53,7 +56,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "behaviour": {
         "owner_qq": 0,
-        "private_reply": True,
+        "private_reply": False,
         "private_whitelist": [],
         "group_reply_mode": "mention",
         "group_whitelist": [],
@@ -162,6 +165,117 @@ def migrate_legacy_data(project_root: Path) -> list[str]:
     return actions
 
 
+def _write_private_json(path: Path, data: dict[str, Any]) -> None:
+    """写入 JSON，并尽量收成仅当前用户可读。不记录内容。"""
+    from .paths import restrict_file_permissions
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_umask = os.umask(0o077) if os.name == "posix" else None
+    try:
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    finally:
+        if old_umask is not None:
+            os.umask(old_umask)
+    restrict_file_permissions(path)
+
+
+def _blank_project_storage(raw: dict[str, Any]) -> None:
+    """新配置不要把数据库指回项目目录里的 data/。"""
+    storage = raw.setdefault("storage", {})
+    if not isinstance(storage, dict):
+        raw["storage"] = {}
+        storage = raw["storage"]
+    for key in ("db_path", "log_path"):
+        val = str(storage.get(key, "")).strip()
+        if not val or val.replace("\\", "/").startswith("data/") or val == "data":
+            storage[key] = ""
+
+
+def init_user_config(project_root: Path, dest: Path | None = None) -> tuple[str, Path]:
+    """首次生成用户数据目录里的配置。已存在则原样保留，不改 private_reply、不改 token。
+
+    返回 ("created"|"exists", path)。拒绝写进项目目录。不打印 token 或 api key。
+    """
+    from .paths import user_data_dir
+
+    project = Path(project_root).resolve()
+    target = Path(dest).expanduser().resolve() if dest else (user_data_dir() / "config.json")
+    if _in_project(target, project):
+        raise ValueError(
+            "拒绝在项目目录里生成 config.json。该文件会包含 OneBot access token，"
+            "只能写到用户数据目录（已被 .gitignore 覆盖，且不在仓库路径内）。"
+        )
+    if target.exists():
+        return "exists", target
+
+    example = project / "config.example.json"
+    if example.is_file():
+        try:
+            raw = json.loads(example.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            raise ValueError(f"配置模板不是合法 JSON：{example.name}") from None
+        if not isinstance(raw, dict):
+            raw = {}
+    else:
+        raw = json.loads(json.dumps(DEFAULTS))
+    raw.setdefault("onebot", {})
+    if not isinstance(raw["onebot"], dict):
+        raw["onebot"] = {}
+    raw["onebot"]["access_token"] = secrets.token_urlsafe(32)
+    raw.setdefault("llm", {})
+    if isinstance(raw["llm"], dict):
+        raw["llm"]["api_key"] = ""
+    raw.setdefault("behaviour", {})
+    if isinstance(raw["behaviour"], dict) and "private_reply" not in raw["behaviour"]:
+        raw["behaviour"]["private_reply"] = False
+    _blank_project_storage(raw)
+    _write_private_json(target, raw)
+    return "created", target
+
+
+def ensure_stored_access_token(project_root: Path) -> str:
+    """返回用户数据目录配置里的 OneBot token。
+
+    文件不存在就按 init_user_config 创建；已有非空 token 原样使用，不改其它字段。
+    调用方不得把返回值写入日志、标准输出或仓库。
+    """
+    from .paths import user_data_dir
+
+    path = user_data_dir() / "config.json"
+    if not path.exists():
+        _state, path = init_user_config(project_root, dest=path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        raise ValueError(f"配置文件不是合法 JSON：{path.name}") from None
+    if not isinstance(data, dict):
+        raise ValueError(f"配置文件不是对象：{path.name}")
+    onebot = data.setdefault("onebot", {})
+    if not isinstance(onebot, dict):
+        data["onebot"] = {}
+        onebot = data["onebot"]
+    token = str(onebot.get("access_token") or "").strip()
+    if token:
+        return token
+    token = secrets.token_urlsafe(32)
+    onebot["access_token"] = token
+    _write_private_json(path, data)
+    return token
+
+
+def write_napcat_onebot_config(target: Path, project_root: Path, template: dict[str, Any]) -> None:
+    """把与 napqq 用户配置相同的 token 写入 NapCat 的 onebot11.json。不打印 token。"""
+    import copy
+
+    token = ensure_stored_access_token(project_root)
+    cfg = copy.deepcopy(template)
+    servers = ((cfg.get("network") or {}).get("websocketServers") or [])
+    if not servers or not isinstance(servers[0], dict):
+        raise ValueError("OneBot 模板缺少 websocketServers")
+    servers[0]["token"] = token
+    _write_private_json(target, cfg)
+
+
 def load_persona_text(name: str, project_root: Path | None = None) -> str:
     """按名字找人设正文。
 
@@ -201,8 +315,9 @@ class Config:
         if p.exists():
             try:
                 raw = json.loads(p.read_text(encoding="utf-8"))
-            except json.JSONDecodeError as e:
-                raise ValueError(f"配置文件不是合法 JSON：{p}\n  {e}") from None
+            except json.JSONDecodeError:
+                # 不附带解析器原文：错误片段可能含 access token 或 api key
+                raise ValueError(f"配置文件不是合法 JSON：{p}") from None
         data = _deep_merge(DEFAULTS, raw)
         cfg = cls(data, p.parent if str(p.parent) else Path("."), source=p if p.exists() else None)
 
@@ -275,6 +390,13 @@ class Config:
             problems.append("llm.model 为空")
         if not str(self._data["onebot"].get("ws_url", "")).startswith(("ws://", "wss://")):
             problems.append("onebot.ws_url 必须是 ws:// 或 wss:// 开头")
+        if not str(self._data["onebot"].get("access_token") or "").strip():
+            problems.append(
+                "onebot.access_token 为空：拒绝启动。本机 127.0.0.1 上的 OneBot/NapCat "
+                "若没有 token，任何本地进程都能借这个 QQ 号发消息。"
+                "请在配置里填写非空 token（或设置环境变量 QQ_AGENT_TOKEN），并在 NapCat 里使用同一个值。"
+                "新安装可运行 python run.py --init，它会在用户数据目录生成 token，终端不显示具体值。"
+            )
         mode = self._data["behaviour"].get("group_reply_mode")
         if mode not in ("mention", "all", "off"):
             problems.append("behaviour.group_reply_mode 只能是 mention / all / off")
@@ -313,6 +435,10 @@ class Config:
         if self._data["behaviour"].get("group_reply_mode") == "all":
             warns.append("group_reply_mode=all：群里每条消息都会回，这是被封号的头号诱因")
         vision_cfg = self._data.get("vision") or {}
+        if vision_cfg.get("enabled") and not (vision_cfg.get("allowed_dirs") or []):
+            warns.append(
+                "vision 已开启但 allowed_dirs 为空：消息里的本地路径一律不读，只接受 http/https 图片链接"
+            )
         if vision_cfg.get("enabled") and not vision_cfg.get("model"):
             model = str(self._data["llm"].get("model", ""))
             if any(k in model.lower() for k in ("deepseek-chat", "deepseek-reasoner")):

@@ -54,7 +54,7 @@ napqq 只懂 OneBot v11 这一层（JSON 消息 + `send_group_msg` 这类动作�
 - **规则层自省**：发送前查自曝身份 / 助手腔 / 过短 / 重复四类硬伤，命中就重生成
 - **主动开口**：静默一段时间后自己找话说；有静默门槛、每日上限、免打扰时段，
   还会把"人呢""在吗"这种没话找话打回重写
-- **可控暴露面**：私聊白名单（只回指定的人）、群聊可完全静默、单实例保护
+- **可控暴露面**：私聊**默认不回**（`private_reply` 新安装为 `false`），也可再用白名单收窄；群聊可完全静默；单实例保护
 - **数据隔离**：配置、数据库、日志全在用户数据目录，项目目录里不含任何隐私
 
 ## 状态
@@ -85,26 +85,26 @@ napqq 只懂 OneBot v11 这一层（JSON 消息 + `send_group_msg` 这类动作�
    - 装 Docker Desktop 的话用容器版更省事，但**不是必须**。
 2. 启动 NapCat，终端/日志里会出现**登录二维码**（或一个二维码图片路径）。
 3. 用你自己的手机 QQ 扫码登录。登录票据会被 NapCat 持久化，之后重启免扫码。
-4. 在 NapCat 的网络配置里开启 **OneBot v11 的 WebSocket 服务端**，监听 `3001`，并设一个 access token（可选但建议）。
+4. 在 NapCat 的网络配置里开启 **OneBot v11 的 WebSocket 服务端**，监听 `3001`，并设一个**非空** access token。留空会让本机任何进程都能借这个号发消息，napqq 遇到空 token 会拒绝启动。
 
 > 全程不涉及 QQ 密码，本项目代码里也没有密码字段。
 
 ### 第二步：填配置
 
+配置写在**用户数据目录**，不要在仓库目录里放 `config.json`（那里会同时出现 api key 和 OneBot token）。
+
 ```powershell
 cd <你放这个项目的目录>
-copy config.example.json config.json
-notepad config.json
+python run.py --init
 ```
 
-必须改的两处：
+`--init` 只在用户数据目录生成文件（Windows 一般是 `%LOCALAPPDATA%\napqq\config.json`）。文件已存在时**不会改写**你已经填过的值。它会生成一个随机 access token，**终端不打印这个值**；请打开该文件，把同一个 token 填进 NapCat，并补上下面两项。不要把 token 或 key 发到聊天、提交或写进 README。
 
 | 字段 | 说明 |
 |---|---|
 | `llm.api_key` | 大模型 key。也可以不填文件，改用环境变量 `DEEPSEEK_API_KEY` |
 | `behaviour.owner_qq` | **只有这个 QQ 号能发管理指令**。填 `0` = 管理指令整体关闭，任何人都不能 `/pause` `/reset`（防止别人劫持你的机器人）。**默认 0** |
-
-如果 NapCat 里设了 token，同步填到 `onebot.access_token`。
+| `onebot.access_token` | **必填，不能为空**。留空会拒绝启动。也可以用环境变量 `QQ_AGENT_TOKEN`（环境变量优先，且不必写进文件） |
 
 ### 第三步：自检，再启动
 
@@ -127,7 +127,7 @@ python tests\test_integration.py      # 61 项集成测试（自写 WebSocket �
 python run.py -c my-config.json       # 指定配置文件
 ```
 
-日志同时打到控制台和 `data/agent.log`（5MB 轮转，保留 3 份）。
+日志同时打到控制台和用户数据目录里的日志文件（5MB 轮转，保留 3 份），不写进仓库。
 
 **单实例保护**：`run.py` 会占用 `127.0.0.1:39997` 作为锁。重复启动会被拒绝（退出码 3），避免两个实例把每条消息回复两次。进程被杀时锁由系统自动释放。
 
@@ -154,7 +154,7 @@ python run.py -c my-config.json       # 指定配置文件
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `behaviour.group_reply_mode` | `mention` | `mention`=只在被 @ 时回复；`all`=群里每条都回（会被踢，慎用）；`off`=群里装死 |
-| `behaviour.private_reply` | `true` | 私聊是否自动回 |
+| `behaviour.private_reply` | `false` | **新安装默认不回私聊**。私聊会进提示词，也会进明文长期记忆。要打开必须在配置里显式写成 `true`；已经写过的值不会被启动过程改掉。只想回特定的人时，设为 `true` 再填 `private_whitelist` |
 | `group_whitelist` / `group_blacklist` | 空 | 白名单非空时，只在这些群活跃 |
 | `private_blacklist` | 空 | 这些人私聊不理会 |
 | `debounce_seconds` | `1.2` | 对方连发几条时先憋一下，合并成一次请求，避免逐条回 |
@@ -218,7 +218,8 @@ python run.py -c my-config.json       # 指定配置文件
   "max_images_per_message": 2,    // 一条消息最多带几张图
   "max_image_bytes": 4194304,     // 单张上限 4MB，超了跳过
   "image_timeout_seconds": 20,
-  "detail": "auto"
+  "detail": "auto",
+  "allowed_dirs": []
 }
 ```
 
@@ -230,6 +231,7 @@ python run.py -c my-config.json       # 指定配置文件
   - `base64` 由本机下载/读取后转成 data URL（本地模型、或图床拉不到时用）；
   - `auto` 端点在本机就用 base64，否则用 url。
 - 图片标识会通过 OneBot 的 `get_image` 换真实地址；
+- **不信任消息里的本地路径**。`allowed_dirs` 为空时，本地文件（含 `file://` 和路径穿越）一律不读，只接受 `http` / `https`。要让 NapCat 缓存目录里的图能被 base64 读进来，把那个目录填进 `allowed_dirs`。其它协议（如 `ftp://`）会拒绝，下载时也不会跟随跳转到非 http(s)。
 - **带图请求失败会自动降级为纯文本重试**，一轮对话不会因为图片挂掉；
 - 只有**当前这条消息**的图片会真的发进去，历史里的图片仍然是 `[图片]` 文字占位（控成本）；
 - 视觉关闭时，提示词会明确告诉模型"你看不到内容"，避免它假装看见了。
@@ -357,8 +359,8 @@ python tools\try_persona.py "在吗" --who 100000004
 实测发出的段结构（群聊，回复被拆成 2 条）：
 
 ```
-id=37622164    [at, text]  真 at -> ['1727117403']   ← 第一条：真 @
-id=1496302284  [text]                                 ← 第二条：不重复 @
+id=<消息ID-1>  [at, text]  真 at -> ['<对方QQ>']   ← 第一条：真 @
+id=<消息ID-2>  [text]                                 ← 第二条：不重复 @
 ```
 
 **注意**：`at_sender` 打开后，群里的暴露面会变大一点点——被 @ 的人会收到通知，也就更容易注意到这个号。这在真人身上是正常行为，但一个机器人频繁 @ 陌生人，仍然是风控模型眼里的可疑信号。
@@ -461,8 +463,7 @@ QQ 账号 ──扫码──> NapCat（宿主 NTQQ，暴露 ws://127.0.0.1:3001�
 ```
 napqq/
 ├─ run.py                    # 入口：--check / --selftest / 正常运行
-├─ config.example.json       # 配置模板
-├─ config.json               # 你的配置（已生成，需要填 key 和 QQ 号）
+├─ config.example.json       # 配置模板（没有密钥；真正的 config.json 在用户数据目录）
 ├─ requirements.md           # 环境依赖与前置条件说明
 └─ agent/
    ├─ ws_client.py           # 手写 WebSocket 客户端（RFC6455，含分片/ping-pong/掩码）
@@ -474,8 +475,8 @@ napqq/
    ├─ message.py             # CQ 码解析/生成、消息段归一化、文本分段
    ├─ store.py               # SQLite：会话、消息历史、摘要、运行时状态
    └─ config.py              # 配置加载 + 校验
-├─ tests/test_integration.py # 61 项集成测试（含 Mock OneBot 服务端）
-└─ data/                     # 运行时生成：agent.db、agent.log
+├─ tests/test_integration.py # 集成测试（含 Mock OneBot 服务端）
+└─ （config.json / napqq.db 在用户数据目录，不在本仓库）
 ```
 
 ---
@@ -515,8 +516,8 @@ napqq/
 # 1. 生成 QQ 表情映射表（从你自己本机安装的 NapCat 读取，仓库里不含该数据）
 python tools/gen_face_table.py
 
-# 2. 准备配置（config.json 不在仓库里，因为它会存你的 API key）
-cp config.example.json config.json   # Windows: copy config.example.json config.json
+# 2. 在用户数据目录生成配置（不要复制进仓库；会写入 access token，终端不显示具体值）
+python run.py --init
 ```
 
 然后 `python run.py --check` 看三项连通性，`python tests/test_integration.py` 跑测试。

@@ -29,6 +29,21 @@ IDENTITY_LEAK = [
     "语言模型", "由深度求索", "由 OpenAI",
 ]
 
+def id_set(values: Any) -> set[str]:
+    """名单统一成字符串。JSON 里的 QQ 号经常是字符串，事件里是 int，直接用 in 会对不上。"""
+    out: set[str] = set()
+    if values is None or values == "" or values == []:
+        return out
+    # 配置误写成单个号码时，不能按字符迭代，否则名单对不上、等于没拦住。
+    if isinstance(values, str) or (isinstance(values, int) and not isinstance(values, bool)):
+        values = [values]
+    for item in values:
+        text = str(item).strip()
+        if text:
+            out.add(text)
+    return out
+
+
 # 每种命中原因对应的重生成指令。要点：只纠正问题，不要解释、不要提到这件事本身
 RETRY_INSTRUCTIONS = {
     "助手腔": "不要用客服或助手的口吻。用你平时的语气，把这句话重说一遍。"
@@ -198,22 +213,25 @@ class Agent:
         sender_id: int,
     ) -> bool:
         b = self.behaviour
+        sender_key = str(sender_id)
         if chat_type == "private":
-            if not b.get("private_reply", True):
+            # 缺省关闭。新安装默认不收私聊；已在配置里写明 true 的不受影响。
+            if not b.get("private_reply", False):
                 return False
-            if sender_id in set(b.get("private_blacklist") or []):
+            if sender_key in id_set(b.get("private_blacklist")):
                 return False
             # 私聊白名单：非空时**只**回复名单里的人，其他一概不理。
             # 这是最省心的收窄方式——比黑名单安全，不会漏掉新加的骚扰者。
-            pw = set(b.get("private_whitelist") or [])
-            if pw and sender_id not in pw:
+            pw = id_set(b.get("private_whitelist"))
+            if pw and sender_key not in pw:
                 return False
             return True
         group_id = int(event.get("group_id") or 0)
-        if group_id in set(b.get("group_blacklist") or []):
+        group_key = str(group_id)
+        if group_key in id_set(b.get("group_blacklist")):
             return False
-        whitelist = set(b.get("group_whitelist") or [])
-        if whitelist and group_id not in whitelist:
+        whitelist = id_set(b.get("group_whitelist"))
+        if whitelist and group_key not in whitelist:
             return False
         mode = b.get("group_reply_mode", "mention")
         if mode == "off":
@@ -406,19 +424,36 @@ class Agent:
         transport = vision.resolve_transport(vcfg, str(self.cfg["llm"].get("base_url", "")))
 
         parts: list[dict[str, Any]] = []
+        roots = self._vision_roots()
         for item in batch:
             for seg in item["segments"]:
                 if seg.get("type") != "image":
                     continue
                 if len(parts) >= max_images:
                     return parts
-                part = await self._resolve_image(seg.get("data") or {}, transport, max_bytes, timeout, detail)
+                part = await self._resolve_image(
+                    seg.get("data") or {}, transport, max_bytes, timeout, detail, roots
+                )
                 if part:
                     parts.append(part)
         return parts
 
+    def _vision_roots(self) -> list[Any]:
+        roots = []
+        for item in self.vision_cfg.get("allowed_dirs") or []:
+            text = str(item).strip()
+            if text:
+                roots.append(self.cfg.resolve(text))
+        return roots
+
     async def _resolve_image(
-        self, data: dict[str, Any], transport: str, max_bytes: int, timeout: float, detail: str
+        self,
+        data: dict[str, Any],
+        transport: str,
+        max_bytes: int,
+        timeout: float,
+        detail: str,
+        roots: list[Any] | None = None,
     ) -> dict[str, Any] | None:
         direct = str(data.get("url") or "")
         file_id = str(data.get("file") or "")
@@ -439,16 +474,19 @@ class Agent:
                 candidates.append(info)
             candidates.append(file_id)
 
+        if roots is None:
+            roots = self._vision_roots()
         for cand in candidates:
-            if cand.startswith("data:image/"):
+            kind = vision.image_ref_kind(cand)
+            if kind == "data":
                 part = vision.build_image_part(cand, detail)
                 if part:
                     return part
-            elif cand.startswith(vision.REMOTE_SCHEMES):
+            elif kind == "remote":
                 if transport == "url":
                     part = vision.build_image_part(cand, detail)
                     if part:
-                        log.debug("图片以链接形式交给模型: %s", cand[:80])
+                        log.debug("图片以链接形式交给模型")
                         return part
                 else:
                     data_url = await asyncio.to_thread(vision.download_to_data_url, cand, max_bytes, timeout)
@@ -456,13 +494,12 @@ class Agent:
                         part = vision.build_image_part(data_url, detail)
                         if part:
                             return part
-            else:
-                path = cand[7:] if cand.startswith("file://") else cand
-                data_url = await asyncio.to_thread(vision.file_to_data_url, path, max_bytes)
+            elif kind == "local":
+                data_url = await asyncio.to_thread(vision.file_to_data_url, cand, max_bytes, roots)
                 if data_url:
                     part = vision.build_image_part(data_url, detail)
                     if part:
-                        log.debug("本地图片已转 base64: %s", path)
+                        log.debug("允许目录内的本地图片已转 base64")
                         return part
         log.warning("图片无法解析为可发送形式，本轮按纯文本继续（file=%s url=%s）", file_id[:60], direct[:60])
         return None

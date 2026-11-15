@@ -171,12 +171,20 @@ python tools/gen_face_table.py
 
 GITIGNORE = """# 隐私与运行时数据 —— 绝对不要提交
 config.json
+.env
+.env.*
 data/
 out/
 *.db
 *.db-shm
 *.db-wal
 *.log
+
+# QQ / NapCat 会话与登录票据
+*.session
+*.session.*
+session.json
+session.token
 
 # 从本机 NapCat 提取的衍生数据（见 NOTICE.md 第 3 节）
 agent/qq_faces.json
@@ -197,8 +205,8 @@ README_TAIL = """
 # 1. 生成 QQ 表情映射表（从你自己本机安装的 NapCat 读取，仓库里不含该数据）
 python tools/gen_face_table.py
 
-# 2. 准备配置（config.json 不在仓库里，因为它会存你的 API key）
-cp config.example.json config.json   # Windows: copy config.example.json config.json
+# 2. 在用户数据目录生成配置（不要复制到仓库目录；会生成 access token，终端不显示）
+python run.py --init
 ```
 
 然后 `python run.py --check` 看三项连通性，`python tests/test_integration.py` 跑测试。

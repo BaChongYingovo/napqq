@@ -42,6 +42,8 @@ class OneBotClient:
     # ---------- 生命周期 ----------
 
     async def start(self, handler: EventHandler) -> None:
+        if not str(self.access_token or "").strip():
+            raise WebSocketError("onebot.access_token 为空，拒绝连接")
         self._handler = handler
         self._running = True
         self._task = asyncio.create_task(self._run_forever(), name="onebot")
