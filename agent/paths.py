@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -39,6 +40,44 @@ def default_db_path() -> Path:
 
 def default_log_path() -> Path:
     return user_data_dir() / "napqq.log"
+
+
+def restrict_file_permissions(path: Path) -> None:
+    """把单个文件收成仅当前用户可读写。失败时静默跳过，绝不抛出、绝不打印文件内容。
+
+    Unix 上是 0600。Windows 上用 icacls 去掉继承并只留给当前用户，避免默认的
+    Users/Everyone 可读 ACL。调用方负责不要把密钥写进日志。
+    """
+    try:
+        if not path.is_file():
+            return
+    except OSError:
+        return
+    if os.name == "posix":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return
+    if os.name != "nt":
+        return
+    user = os.environ.get("USERNAME") or ""
+    if not user:
+        return
+    try:
+        kwargs: dict = {
+            "check": False,
+            "capture_output": True,
+        }
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if creationflags:
+            kwargs["creationflags"] = creationflags
+        subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
+            **kwargs,
+        )
+    except OSError:
+        pass
 
 
 def find_config_path(explicit: str | Path | None = None, project_root: Path | None = None) -> Path:

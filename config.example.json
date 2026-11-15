@@ -35,7 +35,8 @@
     "max_images_per_message": 2,
     "max_image_bytes": 4194304,
     "image_timeout_seconds": 20,
-    "detail": "auto"
+    "detail": "auto",
+    "allowed_dirs": []
   },
   "memory": {
     "enabled": true,
@@ -54,7 +55,7 @@
   },
   "behaviour": {
     "owner_qq": 0,
-    "private_reply": true,
+    "private_reply": false,
     "group_reply_mode": "mention",
     "group_whitelist": [],
     "group_blacklist": [],
@@ -78,8 +79,8 @@
     }
   },
   "storage": {
-    "db_path": "data/agent.db",
-    "log_path": "data/agent.log",
+    "db_path": "",
+    "log_path": "",
     "log_level": "INFO"
   }
 }
